@@ -368,9 +368,10 @@ DATABASES: dict[str, dict[str, Any]] = {
 
 if DEVELOPMENT:
     LOCAL_DATABASE_PASSWORD = get_secret("local_database_password")
+    # Allow PGHOST environment variable to override localhost for Docker development
     DATABASES["default"].update(
         PASSWORD=LOCAL_DATABASE_PASSWORD,
-        HOST="localhost",
+        HOST=os.environ.get("PGHOST", "localhost"),
     )
 elif REMOTE_POSTGRES_HOST != "":
     DATABASES["default"].update(

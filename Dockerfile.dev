@@ -1,0 +1,162 @@
+# Dockerfile for Zulip development environment
+#
+# This Dockerfile creates a development container that:
+# - Has all system dependencies pre-installed
+# - Mounts source code from the host
+# - Runs the development server with auto-reload
+#
+# Build: docker build -f Dockerfile.dev -t zulip-dev .
+# Run: docker compose -f docker-compose.dev.yml up
+
+FROM ubuntu:24.04
+
+# Avoid prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Set locale
+RUN apt-get update && apt-get install -y locales \
+    && locale-gen en_US.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
+
+# Install system dependencies
+# Based on provision.py UBUNTU_COMMON_APT_DEPENDENCIES for Ubuntu 24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core utilities
+    ca-certificates \
+    curl \
+    git \
+    sudo \
+    # Build essentials
+    build-essential \
+    # Python dependencies
+    python3 \
+    python3-dev \
+    python3-pip \
+    python3-venv \
+    libffi-dev \
+    libfreetype6-dev \
+    libjpeg-dev \
+    libldap2-dev \
+    libpq-dev \
+    libsasl2-dev \
+    libssl-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    zlib1g-dev \
+    # PostgreSQL client
+    postgresql-client-16 \
+    # Services that provision expects
+    memcached \
+    redis-server \
+    # Other dependencies from provision
+    hunspell-en-us \
+    gettext \
+    moreutils \
+    unzip \
+    crudini \
+    xdg-utils \
+    # Puppeteer dependencies
+    fonts-freefont-ttf \
+    libatk-bridge2.0-0 \
+    libgbm1 \
+    libgtk-3-0 \
+    libx11-xcb1 \
+    libxcb-dri3-0 \
+    libxss1 \
+    xvfb \
+    # Java for vnu-jar
+    default-jre-headless \
+    # Network utilities for healthchecks
+    netcat-openbsd \
+    # For process management
+    supervisor \
+    # For secret generation
+    openssl \
+    uuid-runtime \
+    # XZ for node tarball extraction
+    xz-utils \
+    # For pyicu and other build dependencies
+    pkg-config \
+    libicu-dev \
+    # For lxml build
+    libxmlsec1-dev \
+    # For pyvips (image processing)
+    libvips42 \
+    libvips-tools \
+    # For other Python packages
+    libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (version from install-node script)
+ARG NODE_VERSION=24.13.0
+RUN arch="$(uname -m)" && \
+    case $arch in \
+        x86_64) tarball="node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+                sha256="e798599612f4bb71333a3397ab0d095fd62214e115aea45aa858a145fc72d67e";; \
+        aarch64) tarball="node-v${NODE_VERSION}-linux-arm64.tar.xz"; \
+                sha256="aa881151bd0f9f154a0424dd60a72e9ce10672619121658c278a24327ef46831";; \
+    esac && \
+    curl -fLO --retry 3 "https://nodejs.org/dist/v${NODE_VERSION}/$tarball" && \
+    echo "$sha256 $tarball" | sha256sum -c && \
+    mkdir -p /srv/zulip-node && \
+    tar -xJf "$tarball" --no-same-owner --strip-components=1 -C /srv/zulip-node && \
+    ln -sf /srv/zulip-node/bin/corepack /usr/local/bin/corepack && \
+    ln -sf /srv/zulip-node/bin/node /usr/local/bin/node && \
+    ln -sf /srv/zulip-node/bin/npm /usr/local/bin/npm && \
+    ln -sf /srv/zulip-node/bin/npx /usr/local/bin/npx && \
+    COREPACK_DEFAULT_TO_LATEST=0 /usr/local/bin/corepack enable && \
+    rm "$tarball"
+
+# Install uv (Python package manager)
+ARG UV_VERSION=0.9.21
+RUN arch="$(uname -m)" && \
+    tarball="uv-${arch}-unknown-linux-gnu.tar.gz" && \
+    case $arch in \
+        aarch64) sha256="416984484783a357170c43f98e7d2d203f1fb595d6b3b95131513c53e50986ef";; \
+        x86_64) sha256="0a1ab27383c28ef1c041f85cbbc609d8e3752dfb4b238d2ad97b208a52232baf";; \
+    esac && \
+    curl -fLO --retry 3 "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/$tarball" && \
+    echo "$sha256 $tarball" | sha256sum -c && \
+    mkdir -p /tmp/uv-extract && \
+    tar -xzf "$tarball" --no-same-owner -C /tmp/uv-extract && \
+    cp /tmp/uv-extract/uv-${arch}-unknown-linux-gnu/uv /usr/local/bin/uv && \
+    cp /tmp/uv-extract/uv-${arch}-unknown-linux-gnu/uvx /usr/local/bin/uvx && \
+    rm -rf /tmp/uv-extract "$tarball"
+
+# Create zulip user with UID matching host user for proper file permissions
+# The UID can be overridden at build time with --build-arg ZULIP_UID=<uid>
+ARG ZULIP_UID=1001
+RUN (userdel -r ubuntu 2>/dev/null || true) && \
+    useradd -ms /bin/bash -u ${ZULIP_UID} zulip && \
+    echo 'zulip ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/zulip
+
+# Create necessary directories
+RUN mkdir -p /srv/zulip /home/zulip/.cache && \
+    chown -R zulip:zulip /srv/zulip /home/zulip
+
+WORKDIR /srv/zulip
+
+# Copy entrypoint script
+COPY docker/entrypoint-dev.sh /usr/local/bin/entrypoint-dev.sh
+RUN chmod +x /usr/local/bin/entrypoint-dev.sh
+
+# Install gosu for stepping down from root
+RUN apt-get update && apt-get install -y --no-install-recommends gosu && \
+    rm -rf /var/lib/apt/lists/*
+
+# We start as root and the entrypoint will fix permissions then switch to zulip
+# This is necessary because the mounted volume may have different ownership
+
+# Expose the development server port
+EXPOSE 9991
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
+    CMD curl -f http://localhost:9991/health || exit 1
+
+ENTRYPOINT ["/usr/local/bin/entrypoint-dev.sh"]
+CMD ["./tools/run-dev", "--interface=", "--skip-provision-check"]

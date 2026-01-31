@@ -1,0 +1,126 @@
+# Docker Compose configuration for Zulip development environment
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Access the development server at http://localhost:8007
+#
+# This setup runs all services in containers with source code mounted
+# from the host for live editing and auto-reload.
+
+services:
+  database:
+    image: "zulip/zulip-postgresql:14"
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "zulip"
+      POSTGRES_USER: "zulip"
+      POSTGRES_PASSWORD: "zulip_dev_password"
+    volumes:
+      - "dev-postgresql:/var/lib/postgresql/data:rw"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zulip -d zulip"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  memcached:
+    image: "memcached:1.6"
+    restart: unless-stopped
+    # No authentication for development - simpler setup
+    # Memcached doesn't have nc/curl, so we disable healthcheck for dev
+    # The entrypoint script will wait for the port to be available
+    healthcheck:
+      test: ["CMD-SHELL", "exit 0"]
+      interval: 5s
+      timeout: 5s
+      retries: 1
+
+  rabbitmq:
+    image: "rabbitmq:3.12-management"
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: "zulip"
+      RABBITMQ_DEFAULT_PASS: "zulip_dev_password"
+    volumes:
+      - "dev-rabbitmq:/var/lib/rabbitmq:rw"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  redis:
+    image: "redis:7-alpine"
+    restart: unless-stopped
+    # No authentication for development - simpler setup
+    volumes:
+      - "dev-redis:/data:rw"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  zulip-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    ports:
+      - "8007:9991"
+    environment:
+      # Database configuration
+      LOCAL_DATABASE_PASSWORD: "zulip_dev_password"
+      PGHOST: "database"
+      PGUSER: "zulip"
+      PGPASSWORD: "zulip_dev_password"
+      PGDATABASE: "zulip"
+      # RabbitMQ configuration
+      RABBITMQ_HOST: "rabbitmq"
+      RABBITMQ_PASSWORD: "zulip_dev_password"
+      # Memcached configuration (no auth in dev)
+      MEMCACHED_LOCATION: "memcached:11211"
+      # Redis configuration (no auth in dev)
+      REDIS_HOST: "redis"
+      # External host for browser access (override for your domain)
+      # EXTERNAL_HOST: "your-domain.example.com"
+      # HTTPS proxy configuration (set to "1" if behind nginx/reverse proxy)
+      # BEHIND_HTTPS_PROXY: "1"
+      # Development mode
+      DEVELOPMENT: "1"
+    volumes:
+      # Mount source code for live editing
+      - "./:/srv/zulip:rw"
+      # Use named volumes for heavy build artifacts to improve performance
+      - "dev-venv:/srv/zulip/.venv:rw"
+      - "dev-node-modules:/srv/zulip/node_modules:rw"
+      - "dev-var:/srv/zulip/var:rw"
+    depends_on:
+      database:
+        condition: service_healthy
+      memcached:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Increase file descriptor limits for development
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # Keep container running if run-dev fails initially
+    stdin_open: true
+    tty: true
+    # Use tini init system for proper process management (needed for os.setpgrp())
+    init: true
+    command: ["./tools/run-dev", "--interface=", "--skip-provision-check"]
+
+volumes:
+  dev-postgresql:
+  dev-rabbitmq:
+  dev-redis:
+  dev-venv:
+  dev-node-modules:
+  dev-var:

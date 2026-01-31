@@ -241,6 +241,15 @@ const config = (
                 overlay: {
                     runtimeErrors: false,
                 },
+                // When behind a reverse proxy, use the proxied WebSocket URL
+                webSocketURL: process.env.BEHIND_HTTPS_PROXY
+                    ? {
+                          hostname: process.env.EXTERNAL_HOST?.split(":")[0] ?? "localhost",
+                          port: 443,
+                          protocol: "wss",
+                          pathname: "/webpack-ws",
+                      }
+                    : undefined,
             },
             devMiddleware: {
                 publicPath: "/webpack/",
