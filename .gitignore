@@ -21,6 +21,9 @@
 /zproject/apns-dev-key.p8
 /zproject/dev-secrets.conf
 /zproject/custom_dev_settings.py
+
+## Tool-specific directories
+.claude/
 /tools/conf.ini
 /tools/custom_provision
 /tools/droplets/conf.ini
